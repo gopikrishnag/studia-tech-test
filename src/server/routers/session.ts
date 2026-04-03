@@ -40,8 +40,50 @@ export const sessionRouter = router({
       })
     )
     .query(async ({ ctx, input }) => {
-      // TODO: Implement this procedure
-      throw new Error("Not implemented");
+      const now = new Date();
+
+      const sessions = await ctx.prisma.session.findMany({
+        where: {
+          tutorId: input.tutorId,
+          startsAt: {
+            gt: now,
+          },
+        },
+        include: {
+          tutor: {
+            select: {
+              name: true,
+              subject: true,
+            },
+          },
+          _count: {
+            select: {
+              bookings: {
+                where: {
+                  status: "confirmed",
+                },
+              },
+            },
+          },
+        },
+        orderBy: {
+          startsAt: "asc",
+        },
+      });
+
+      const availableSessions = sessions
+        .filter((session) => session._count.bookings < session.capacity)
+        .map((session) => {
+          const { _count, tutor, ...rest } = session;
+          return {
+            ...rest,
+            tutorName: tutor.name,
+            tutorSubject: tutor.subject,
+            spotsRemaining: session.capacity - _count.bookings,
+          };
+        });
+
+      return availableSessions;
     }),
 
   /**
@@ -71,8 +113,62 @@ export const sessionRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // TODO: Implement this procedure
-      throw new Error("Not implemented");
+      const { studentId, sessionId, notes } = input;
+      const now = new Date();
+
+      const session = await ctx.prisma.session.findUnique({
+        where: { id: sessionId },
+        include: {
+          bookings: {
+            where: {
+              status: "confirmed",
+            },
+          },
+        },
+      });
+
+      if (!session) {
+        throw new Error("Session not found");
+      }
+
+      if (session.startsAt <= now) {
+        throw new Error("Session is in the past");
+      }
+
+      if (session.bookings.length >= session.capacity) {
+        throw new Error("Session is fully booked");
+      }
+
+      const existingBooking = await ctx.prisma.booking.findFirst({
+        where: {
+          studentId,
+          sessionId,
+        },
+      });
+
+      if (existingBooking) {
+        if (existingBooking.status === "confirmed") {
+          throw new Error("Student already has a confirmed booking for this session");
+        }
+        // If cancelled, allow re-booking by updating the status
+        return ctx.prisma.booking.update({
+          where: { id: existingBooking.id },
+          data: { status: "confirmed", notes },
+          include: { session: true },
+        });
+      }
+
+      return ctx.prisma.booking.create({
+        data: {
+          studentId,
+          sessionId,
+          notes,
+          status: "confirmed",
+        },
+        include: {
+          session: true,
+        },
+      });
     }),
 
   /**
@@ -99,8 +195,30 @@ export const sessionRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // TODO: Implement this procedure
-      throw new Error("Not implemented");
+      const { bookingId } = input;
+      const now = new Date();
+
+      const booking = await ctx.prisma.booking.findUnique({
+        where: { id: bookingId },
+        include: { session: true },
+      });
+
+      if (!booking) {
+        throw new Error("Booking not found");
+      }
+
+      if (booking.status === "cancelled") {
+        throw new Error("Booking is already cancelled");
+      }
+
+      if (booking.session.startsAt <= now) {
+        throw new Error("Session has already started or passed");
+      }
+
+      return ctx.prisma.booking.update({
+        where: { id: bookingId },
+        data: { status: "cancelled" },
+      });
     }),
 
   /**
@@ -122,7 +240,43 @@ export const sessionRouter = router({
       })
     )
     .query(async ({ ctx, input }) => {
-      // TODO: Implement this procedure
-      throw new Error("Not implemented");
+      const { studentId, status } = input;
+
+      const bookings = await ctx.prisma.booking.findMany({
+        where: {
+          studentId,
+          status,
+        },
+        include: {
+          session: {
+            include: {
+              tutor: {
+                select: {
+                  name: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: {
+          session: {
+            startsAt: "desc",
+          },
+        },
+      });
+
+      return bookings.map((booking) => {
+        const { session, ...rest } = booking;
+        return {
+          ...rest,
+          session: {
+            id: session.id,
+            title: session.title,
+            startsAt: session.startsAt,
+            endsAt: session.endsAt,
+          },
+          tutorName: session.tutor.name,
+        };
+      });
     }),
 });
